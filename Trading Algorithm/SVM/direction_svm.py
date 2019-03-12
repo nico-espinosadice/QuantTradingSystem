@@ -11,7 +11,7 @@ class SVM_trader:
   def __init__(self, startamount, short):
     self.starting_amount = startamount
     self.can_short = short
-    self.best_svm = {}
+    self.best_svm_rbf, self.best_svm_poly = {}, {}
     self.data = {}
     self.train_data, self.cv_data, self.test_data,\
       self.train_labels, self.cv_labels, self.test_labels,\
@@ -37,42 +37,42 @@ class SVM_trader:
       "datatype": "json",
       "apikey": "A1A3K3EDC9CG3LVW",
     }
-    response = requests.get(API_URL, params=data)
-
-    data = response.json()['Time Series (Daily)']
-    df = pd.DataFrame(data).transpose()
-
-    df = df[::-1]  # goes from earliest to newest
-
-    df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-    df.to_csv(symbol + '.csv', encoding='utf-8')
-    nan = float('NaN')
-
-    df = pd.read_csv(symbol + '.csv', infer_datetime_format=True)
-    df = df.rename(columns={'Unnamed: 0': 'Date'})
-
-    df.at[df.shape[0] - 1, 'High'] = nan
-    df.at[df.shape[0] - 1, 'Low'] = nan
-    df.at[df.shape[0] - 1, 'Close'] = nan
-    df['Volume'] = np.asarray(np.array(df['Volume']), 'float')
-    df.at[df.shape[0] - 1, 'Volume'] = nan
-
-    df.to_csv(symbol + '.csv', encoding='utf-8')
+    # response = requests.get(API_URL, params=data)
+    #
+    # data = response.json()['Time Series (Daily)']
+    # df = pd.DataFrame(data).transpose()
+    #
+    # df = df[::-1]  # goes from earliest to newest
+    #
+    # df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+    # df.to_csv(symbol + '.csv', encoding='utf-8')
+    # nan = float('NaN')
+    #
+    # df = pd.read_csv(symbol + '.csv', infer_datetime_format=True)
+    # df = df.rename(columns={'Unnamed: 0': 'Date'})
+    #
+    # df.at[df.shape[0] - 1, 'High'] = nan
+    # df.at[df.shape[0] - 1, 'Low'] = nan
+    # df.at[df.shape[0] - 1, 'Close'] = nan
+    # df['Volume'] = np.asarray(np.array(df['Volume']), 'float')
+    # df.at[df.shape[0] - 1, 'Volume'] = nan
+    #
+    # df.to_csv(symbol + '.csv', encoding='utf-8')
 
     self.data[symbol] = pd.read_csv(csv_path, infer_datetime_format=True)
 
   def make_train_cv_test(self, symbol, split, N, csv_path):
     self.update_data(symbol=symbol, csv_path=csv_path) # get most current data
 
-    this_data = self.data[symbol].drop(['Date'], axis=1) # get rid of date column for the data to be trained
+    this_data = self.data[symbol].drop(['Date', 'Unnamed: 0'], axis=1) # get rid of date column for the data to be trained
+
     this_data = this_data.dropna() # gets rid of last row with only open data
     X = np.array(this_data.ewm(span=N, adjust=False).mean())  # all of the exponential moving averages
     startrow = np.zeros((1, X[0].size)) # make the first row unknown
     X = np.append(startrow, X, axis=0)
-    this_morning = np.array(self.data[symbol]['Open']) # gets all opens
-    this_morning = this_morning.reshape(-1, 1)
-    X = np.column_stack((this_morning, X))
-    X = X[:-1] # gets rid of the last data value; no need to use it
+    mornings = np.array(self.data[symbol]['Open']) # gets all opens
+    mornings = mornings.reshape(-1, 1)
+    X = np.column_stack((mornings, X))
 
     # Scaling data
     scaler = MinMaxScaler(copy=False)
@@ -86,12 +86,14 @@ class SVM_trader:
     train = int(self.data[symbol]['Open'].size * split[0])  # gives number of training days
     cv = int(self.data[symbol]['Open'].size * split[1])  # number of cross validation days
 
+    # Makes train, cv, and test data for the symbol. Also does not include
+    # the last day of data in test_data, because there is not a label for it.
     self.train_data[symbol], self.train_labels[symbol] = X[:train], y[:train]
     self.cv_data[symbol], self.cv_labels[symbol] = X[train:train + cv], y[train:train + cv]
-    self.test_data[symbol], self.test_labels[symbol] = X[train + cv:], y[train + cv:]
+    self.test_data[symbol], self.test_labels[symbol] = X[train + cv:-1], y[train + cv:]
 
     self.train_prices[symbol], self.cv_prices[symbol], self.test_prices[symbol] = \
-      this_morning[:train], this_morning[train:train+cv], this_morning[train+cv:]
+      mornings[:train], mornings[train:train+cv], mornings[train+cv:-1]
 
   def percent_correct(self, s_v_m, type, symbol):
     if(type == 'cv'):
@@ -109,31 +111,50 @@ class SVM_trader:
   def make_svm(self, symbol, N, path, split=(.6, .2, .2), c_test_range=[1, 65000], num_iterations=20):
     self.make_train_cv_test(symbol, split, N, path) # prepare the data
 
-    pc, amounts, Cs = [], [], [] # lists for percent correct (pc) and C values (Cs)
-    amount_to_svm = {} # maps from the amount a svm would make to the svm itself
+    pc, amounts_rbf, Cs = [], [], [] # lists for percent correct (pc) and C values (Cs)
+    amount_to_svm_rbf = {} # maps from the amount a svm would make to the svm itself
     start, end = c_test_range
     c = (end/start) ** (1/num_iterations)
     Cs = [start*(c**i) for i in range(1, num_iterations+1)]
     for i in range(1, num_iterations+1): # cycle through different possible C values
-      support_vector_machine = svm.SVC(C=Cs[i-1], kernel='poly', gamma='auto')
-      support_vector_machine.fit(self.train_data[symbol], self.train_labels[symbol])
-      amount_made = self.simulate_amount_gained(symbol, support_vector_machine, type='cv')
-      amounts += [amount_made]
-      if amount_made in amount_to_svm.keys():
-        # print('Cross validation yields same answer for another C value')
-        pass
-      else:
-        amount_to_svm[amount_made] = support_vector_machine
-      pc += [self.percent_correct(support_vector_machine, 'cv', symbol=symbol)]
-    plt.plot(np.log(Cs), amounts)
+      svm_rbf = svm.SVC(C=Cs[i-1], kernel='rbf', gamma='auto')
+      svm_rbf.fit(self.train_data[symbol], self.train_labels[symbol])
+      amount_made = self.simulate_amount_gained(symbol, svm_rbf, type='cv')
+      amounts_rbf += [amount_made]
+      if amount_made not in amount_to_svm_rbf.keys():
+        amount_to_svm_rbf[amount_made] = svm_rbf
+      pc += [self.percent_correct(svm_rbf, 'cv', symbol=symbol)]
+
+    most_made_rbf = max(amount_to_svm_rbf.keys())
+    self.cv_performance.add( (symbol, most_made_rbf) )
+    self.best_svm_rbf[symbol] = amount_to_svm_rbf[most_made_rbf]
+
+    pc_poly, amounts_poly, Cs = [], [], []  # lists for percent correct (pc) and C values (Cs)
+    amount_to_svm_poly = {}  # maps from the amount a svm would make to the svm itself
+    start, end = c_test_range
+    c = (end / start) ** (1 / num_iterations)
+    Cs = [start * (c ** i) for i in range(1, num_iterations + 1)]
+    for i in range(1, num_iterations + 1):  # cycle through different possible C values
+      svm_poly = svm.SVC(C=Cs[i - 1], kernel='poly', gamma='auto')
+      svm_poly.fit(self.train_data[symbol], self.train_labels[symbol])
+      amount_made = self.simulate_amount_gained(symbol, svm_poly, type='cv')
+      amounts_poly += [amount_made]
+      if amount_made not in amount_to_svm_poly.keys():
+        amount_to_svm_poly[amount_made] = svm_poly
+      pc_poly += [self.percent_correct(svm_poly, 'cv', symbol=symbol)]
+
+    most_made_poly = max(amount_to_svm_poly.keys())
+    self.cv_performance.add((symbol, most_made_poly))
+    self.best_svm_poly[symbol] = amount_to_svm_poly[most_made_poly]
+
+    plt.plot(np.log(Cs), amounts_rbf)
+    plt.plot(np.log(Cs), amounts_poly)
     plt.title(symbol)
     plt.xlabel('C values')
     plt.ylabel('Amount made with this C value')
     plt.show()
 
-    most_made = max(amount_to_svm.keys())
-    self.cv_performance.add( (symbol, most_made) )
-    self.best_svm[symbol] = amount_to_svm[most_made]
+
 
   def simulate_amount_gained_buy_always(self, symbol, type='test', show_output=False):
     '''
@@ -142,11 +163,11 @@ class SVM_trader:
     :return: the amount that would be gained from just buying every day
     '''
     print('\nBUY ONLY STRATEGY')
-    made = self.simulate_amount_gained(symbol, None, type+' buy', show_output=show_output)
+    made = self.simulate_amount_gained(symbol=symbol, svm1=None, svm2=None, type=type+' buy', show_output=show_output)
     print('END BUY ONLY STRATEGY\n')
     return made
 
-  def simulate_amount_gained(self, symbol, svm, type='test', show_output=False):
+  def simulate_amount_gained(self, symbol, svm1, svm2=None, type='test', show_output=False):
     '''
     :param: symbol: the name of the stock (string)
     :param: svm: the support vector machine (sk learn SVM)
@@ -160,10 +181,16 @@ class SVM_trader:
     '''
     cash, num_stocks = self.starting_amount, 0  # starts at 0 stocks
     if type == 'test':
-      predictions = svm.predict(self.test_data[symbol])
-      prices = self.test_prices[symbol].flatten() # flattens 2D array of prices
+      predictions = svm1.predict(self.test_data[symbol])
+      if svm2 != None:
+        predictions2 = svm2.predict(self.test_data[symbol])
+        predictions = [1 if (predictions[i] == 1 or predictions2[i] == 1) else 0 for i in range(predictions.size)]
+      prices = self.test_prices[symbol].flatten()  # flattens 2D array of prices
     elif type == 'cv':
-      predictions = svm.predict(self.cv_data[symbol])
+      predictions = svm1.predict(self.cv_data[symbol])
+      if svm2 != None:
+        predictions2 = svm2.predict(self.cv_data[symbol])
+        predictions = [1 if (predictions[i] == 1 or predictions2[i] == 1) else 0 for i in range(predictions.size)]
       prices = self.cv_prices[symbol].flatten()  # flattens 2D array of prices
     elif type == 'test buy':
       predictions = np.array([1 for datapoint in self.test_data[symbol]])
@@ -210,7 +237,7 @@ class SVM_trader:
     with open('SVM_performance.csv', 'a') as csvfile:
       writer = csv.writer(csvfile)
       guess_buy_performance = 100*(np.sum(self.test_labels[symbol])/np.size(self.test_labels[symbol]))
-      my_performance = 100*self.percent_correct(self.best_svm[symbol], 'test', symbol=symbol)
+      my_performance = 100*self.percent_correct(self.best_svm_rbf[symbol], 'test', symbol=symbol)
       my_adjusted_performance = my_performance-guess_buy_performance
       writer.writerow([symbol, N, -1, -1,
                       my_performance,
@@ -221,7 +248,8 @@ class SVM_trader:
     print('Always buy strategy percent correct: {}%'.format(guess_buy_performance))
     print('Advantage percent correct: {}%'.format(my_adjusted_performance))
     amount_gained = self.simulate_amount_gained(symbol=symbol,
-                                svm=self.best_svm[symbol],
+                                svm1=self.best_svm_rbf[symbol],
+                                svm2 = self.best_svm_poly[symbol],
                                 type='test', show_output=True)
     buy_always_amount_gained = self.simulate_amount_gained_buy_always(symbol, type='test', show_output=True)
     print('Buy always amount: ${}'.format(buy_always_amount_gained))
@@ -229,8 +257,9 @@ class SVM_trader:
 
 if __name__ == '__main__':
   s = SVM_trader(2000, False)
-  stock_symbols = ['SPY', 'AAPL', 'ZNGA', 'IBM']
+  stock_symbols = ['ZNGA', 'SPY', 'AAPL', 'IBM']
   for stock_symbol in stock_symbols:
-    s.run_test(symbol=stock_symbol, N=10, split=(.4, .2, .4), path=stock_symbol+'.csv',
+    print('\n\n' + stock_symbol)
+    s.run_test(symbol=stock_symbol, N=10, split=(.6, .05, .35), path=stock_symbol+'.csv',
                c_test_range=[1, 6000000], num_iterations=10)
 
