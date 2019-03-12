@@ -1,5 +1,5 @@
-import alpaca_trade_api as tradeapi
 import numpy as np
+import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn import svm
@@ -8,181 +8,229 @@ import csv
 
 
 class SVM_trader:
-  def __init__(self):
-    self.api = tradeapi.REST (
-      key_id='PKOH1X3RLHOUW294ZQ0S',
-      secret_key='H7RgDXnwF18cvvDE3yxm1ZjX/B816tPlpMHcm8Je',
-      base_url='https://paper-api.alpaca.markets'
-    )
+  def __init__(self, startamount, short):
+    self.starting_amount = startamount
+    self.can_short = short
+    self.best_svm = {}
+    self.data = {}
+    self.train_data, self.cv_data, self.test_data,\
+      self.train_labels, self.cv_labels, self.test_labels,\
+      self.train_prices, self.cv_prices, self.test_prices= \
+      {}, {}, {}, {}, {}, {}, {}, {}, {}
+    self.cv_performance = set() # a set of tuples, where tup[0] = stock_name, tup[1] = most the stock made in cross validation
 
-  def run_test(self, symbol, N, train_barriers, test_barriers, cv_barriers, c_test_range=[1, 65000], num_iterations=20):
-    num_years = (test_barriers[1]-train_barriers[0]).days / 365.25
-    opens, closes, highs, lows, volumes = [], [], [], [], []
-    end = train_barriers[0]
-    for i in range(round(num_years)):
-      start = end
-      end = pd.Timestamp(train_barriers[0].year+1+i,
-                         train_barriers[0].month,
-                         train_barriers[0].day)
-      bars = self.api.get_barset(symbol, 'day',
-                            start = start, end=end,
-                            limit=365)[symbol]
-      opens += [item.o for item in bars]
-      closes += [item.c for item in bars]
-      highs += [item.h for item in bars]
-      lows += [item.l for item in bars]
-      volumes += [item.v for item in bars]
+  def update_data(self, symbol, csv_path):
+    '''
+    Purpose:
+      Updates with historical data up to this day
+    :param symbol: name of the symbol to update
+    :param csv_path: string path to the csv file for that symbol
+    :return: True if it found the file and successfully appended,
+             otherwise false
+    '''
 
+    API_URL = "https://www.alphavantage.co/query"
+    data = {
+      "function": "TIME_SERIES_DAILY",
+      "symbol": symbol,
+      "outputsize": "full",
+      "datatype": "json",
+      "apikey": "A1A3K3EDC9CG3LVW",
+    }
+    response = requests.get(API_URL, params=data)
 
-    remaining_days = (test_barriers[1]-end).days
-    bars = self.api.get_barset(symbol, 'day', start=end, end=test_barriers[1], limit=remaining_days)[symbol]
-    opens += [item.o for item in bars]
-    closes += [item.c for item in bars]
-    highs += [item.h for item in bars]
-    lows += [item.l for item in bars]
-    volumes += [item.v for item in bars]
+    data = response.json()['Time Series (Daily)']
+    df = pd.DataFrame(data).transpose()
 
-    # EMA of the data
-    data= pd.DataFrame(np.column_stack((opens, closes, highs, lows, volumes)))
-    X = np.array(data.ewm(span=N, adjust=False).mean()) # all of the exponential moving averages
+    df = df[::-1]  # goes from earliest to newest
+
+    df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+    df.to_csv(symbol + '.csv', encoding='utf-8')
+    nan = float('NaN')
+
+    df = pd.read_csv(symbol + '.csv', infer_datetime_format=True)
+    df = df.rename(columns={'Unnamed: 0': 'Date'})
+
+    df.at[df.shape[0] - 1, 'High'] = nan
+    df.at[df.shape[0] - 1, 'Low'] = nan
+    df.at[df.shape[0] - 1, 'Close'] = nan
+    df['Volume'] = np.asarray(np.array(df['Volume']), 'float')
+    df.at[df.shape[0] - 1, 'Volume'] = nan
+
+    df.to_csv(symbol + '.csv', encoding='utf-8')
+
+    self.data[symbol] = pd.read_csv(csv_path, infer_datetime_format=True)
+
+  def make_train_cv_test(self, symbol, split, N, csv_path):
+    self.update_data(symbol=symbol, csv_path=csv_path) # get most current data
+
+    this_data = self.data[symbol].drop(['Date'], axis=1) # get rid of date column for the data to be trained
+    this_data = this_data.dropna() # gets rid of last row with only open data
+    X = np.array(this_data.ewm(span=N, adjust=False).mean())  # all of the exponential moving averages
+    startrow = np.zeros((1, X[0].size)) # make the first row unknown
+    X = np.append(startrow, X, axis=0)
+    this_morning = np.array(self.data[symbol]['Open']) # gets all opens
+    this_morning = this_morning.reshape(-1, 1)
+    X = np.column_stack((this_morning, X))
+    X = X[:-1] # gets rid of the last data value; no need to use it
+
     # Scaling data
     scaler = MinMaxScaler(copy=False)
     scaler.fit(X)
     scaler.transform(X)
-    MinMaxScaler(X, copy=False) # normalizes X in-place
 
-    # Making SVM
-    ### Making the labels array (should have bought on day[i] if labels[i] < labels[i+1]
-    y = [1 if (opens[i] < opens[i + 1]) else 0 for i in range(0, len(opens) - 1)]
-    y += [0] # guesses 'sell' for last prediction
-    y = np.array(y)
+    opens, closes = np.array(this_data['Open']), np.array(this_data['Close'])
+    assert opens.size == closes.size
+    y = np.array([1 if (opens[i] < closes[i]) else 0 for i in range(opens.size)])
 
-    train = (train_barriers[1]-train_barriers[0]).days # number of training days
-    cv = (cv_barriers[1]-cv_barriers[0]).days # number of cross validation days
+    train = int(self.data[symbol]['Open'].size * split[0])  # gives number of training days
+    cv = int(self.data[symbol]['Open'].size * split[1])  # number of cross validation days
 
-    train_data, train_labels = X[:train], y[:train]
-    cv_data, cv_labels = X[train:train + cv], y[train:train + cv]
-    test_data, test_labels = X[train + cv:], y[train + cv:]
+    self.train_data[symbol], self.train_labels[symbol] = X[:train], y[:train]
+    self.cv_data[symbol], self.cv_labels[symbol] = X[train:train + cv], y[train:train + cv]
+    self.test_data[symbol], self.test_labels[symbol] = X[train + cv:], y[train + cv:]
 
-    def percent_correct(s_v_m, type):
-      predictions = s_v_m.predict(cv_data) if(type=='cv') else s_v_m.predict(test_data)
-      num_correct = 0
-      labels = cv_labels if(type=='cv') else test_labels
-      for i, label in enumerate(labels): num_correct += 1 if (label == predictions[i]) else 0
-      return float(num_correct)/len(labels) # givest the accuracy as a percentage [0, 1]
+    self.train_prices[symbol], self.cv_prices[symbol], self.test_prices[symbol] = \
+      this_morning[:train], this_morning[train:train+cv], this_morning[train+cv:]
 
-    def amount_gained(s_v_m, prices):
-      '''
-      :param s_v_m: the already trained support vector machine
-      :param prices: an array with the opening prices on the days
-      in question (prices[i] is price on ith day of s_v_m prediction)
-      :return: the amount of money that would be made if 1 share
-      of the company's stock was bought every time the algorithm
-      predicted 'buy' and 1 share of the company's stock was
-      sold every time the algorithm predicted 'sell'. This
-      assumes no spending cap, and that the stock can be shorted
-      indefinitely. Assumes buying and selling at open.
-      '''
-      most_money_invested = 0
-      paper_capital, num_stocks = 0, 0 # starts at 0 of both
-      predictions = s_v_m.predict(test_data)
-      for i, prediction in enumerate(predictions):
-        if(-paper_capital > most_money_invested):
-          most_money_invested = -paper_capital
-        if(prediction == 1):
-          num_stocks += 1
-          paper_capital -= prices[i]
-        elif(prediction == 0):
-          num_stocks -= 1
-          paper_capital += prices[i]
+  def percent_correct(self, s_v_m, type, symbol):
+    if(type == 'cv'):
+      predictions = s_v_m.predict(self.cv_data[symbol])
+      labels = self.cv_labels[symbol]
+    elif(type == 'test'):
+      predictions = s_v_m.predict(self.test_data[symbol])
+      labels = self.test_labels[symbol]
+    else:
+      assert False, 'Enter a valid type'
+    num_correct = 0
+    for i, label in enumerate(labels): num_correct += 1 if (label == predictions[i]) else 0
+    return float(num_correct) / len(labels)  # givest the accuracy as a percentage [0, 1]
 
-      num_days = len(predictions)
-      stock_capital = num_stocks*prices[-1]
-      money_made = stock_capital+paper_capital
-      print('Ends with ${} in capital'.format(paper_capital))
-      print('Ends with ${} in stocks'.format(stock_capital))
-      print('Ends with net of ${}'.format(money_made))
-      print('${} invested at maximum'.format(most_money_invested))
-      print('Made, on average, ${} per day over {} days'.format(
-        money_made/num_days,
-        num_days
-      ))
-      return stock_capital + paper_capital
+  def make_svm(self, symbol, N, path, split=(.6, .2, .2), c_test_range=[1, 65000], num_iterations=20):
+    self.make_train_cv_test(symbol, split, N, path) # prepare the data
 
+    pc, amounts, Cs = [], [], [] # lists for percent correct (pc) and C values (Cs)
+    amount_to_svm = {} # maps from the amount a svm would make to the svm itself
+    start, end = c_test_range
+    c = (end/start) ** (1/num_iterations)
+    Cs = [start*(c**i) for i in range(1, num_iterations+1)]
+    for i in range(1, num_iterations+1): # cycle through different possible C values
+      support_vector_machine = svm.SVC(C=Cs[i-1], kernel='poly', gamma='auto')
+      support_vector_machine.fit(self.train_data[symbol], self.train_labels[symbol])
+      amount_made = self.simulate_amount_gained(symbol, support_vector_machine, type='cv')
+      amounts += [amount_made]
+      if amount_made in amount_to_svm.keys():
+        # print('Cross validation yields same answer for another C value')
+        pass
+      else:
+        amount_to_svm[amount_made] = support_vector_machine
+      pc += [self.percent_correct(support_vector_machine, 'cv', symbol=symbol)]
+    plt.plot(np.log(Cs), amounts)
+    plt.title(symbol)
+    plt.xlabel('C values')
+    plt.ylabel('Amount made with this C value')
+    plt.show()
 
-    def simulate_amount_gained(s_v_m, prices, starting_amount, can_short=False):
-      '''
-      :param s_v_m: the already trained support vector machine
-      :param prices: an array with the opening prices on the days
-      in question (prices[i] is price on ith day of s_v_m prediction)
-      :return: the amount of money that would be made if 1 share
-      of the company's stock was bought every time the algorithm
-      predicted 'buy' and 1 share of the company's stock was
-      sold every time the algorithm predicted 'sell'. This
-      assumes no spending cap, and that the stock can be shorted
-      indefinitely. Assumes buying and selling at open.
-      '''
-      cash, num_stocks = starting_amount, 0 # starts at 0 stocks
-      predictions = s_v_m.predict(test_data)
-      for i, prediction in enumerate(predictions):
-        if prediction == 1 and prices[i] < cash:
-          num_stocks += 1
-          cash -= prices[i]
-        elif prediction == 0 and (can_short or num_stocks >= 1):
-            num_stocks -= 1
-            cash += prices[i]
+    most_made = max(amount_to_svm.keys())
+    self.cv_performance.add( (symbol, most_made) )
+    self.best_svm[symbol] = amount_to_svm[most_made]
 
-      num_days = len(predictions)
-      stock_capital = num_stocks*prices[-1]
-      money_made = stock_capital+cash-starting_amount
+  def simulate_amount_gained_buy_always(self, symbol, type='test', show_output=False):
+    '''
+    :param symbol: stock symbol, as a string
+    :param type: either test or cv
+    :return: the amount that would be gained from just buying every day
+    '''
+    print('\nBUY ONLY STRATEGY')
+    made = self.simulate_amount_gained(symbol, None, type+' buy', show_output=show_output)
+    print('END BUY ONLY STRATEGY\n')
+    return made
+
+  def simulate_amount_gained(self, symbol, svm, type='test', show_output=False):
+    '''
+    :param: symbol: the name of the stock (string)
+    :param: svm: the support vector machine (sk learn SVM)
+    :param: type: either 'cv', 'test', 'cv buy', 'test buy'
+    :return: the amount of money that would be made if 1 share
+    of the company's stock was bought every time the algorithm
+    predicted 'buy' and 1 share of the company's stock was
+    sold every time the algorithm predicted 'sell'. This
+    assumes no spending cap, and that the stock can be shorted
+    indefinitely. Assumes buying and selling at open.
+    '''
+    cash, num_stocks = self.starting_amount, 0  # starts at 0 stocks
+    if type == 'test':
+      predictions = svm.predict(self.test_data[symbol])
+      prices = self.test_prices[symbol].flatten() # flattens 2D array of prices
+    elif type == 'cv':
+      predictions = svm.predict(self.cv_data[symbol])
+      prices = self.cv_prices[symbol].flatten()  # flattens 2D array of prices
+    elif type == 'test buy':
+      predictions = np.array([1 for datapoint in self.test_data[symbol]])
+      prices = self.test_prices[symbol].flatten() # flattens 2D array of prices
+    elif type == 'cv buy':
+      predictions = np.array([1 for datapoint in self.cv_data[symbol]])
+      prices = self.test_prices[symbol].flatten()  # flattens 2D array of prices
+
+    for i, prediction in enumerate(predictions):
+      if prediction == 1 and prices[i] < cash:
+        num_stocks_to_buy = int(cash/prices[i])
+        num_stocks += num_stocks_to_buy
+        cash = cash % prices[i]
+      elif prediction == 0 and (self.can_short or num_stocks >= 1):
+        cash += prices[i] * num_stocks
+        num_stocks = 0
+
+    num_days = len(predictions)
+    stock_capital = num_stocks * prices[-1]
+    money_made = stock_capital + cash - self.starting_amount
+    if show_output == True :
       print('Ends with ${} in capital'.format(cash))
       print('Ends with ${} in stocks'.format(stock_capital))
       print('Ends with net of ${}'.format(money_made))
       print('Made, on average, ${} per day over {} days'.format(
-        money_made/num_days,
+        money_made / num_days,
         num_days
       ))
-      return money_made
+    return money_made
 
-    pc, Cs = [], []
-    start, end = c_test_range
-    c = (end/start) ** (1/num_iterations)
-    pc_to_c = {}
-    for i in range(1, num_iterations+1):
-      Cs += [start*(c**i)]
-      support_vector_machine = svm.SVC(C=Cs[-1], kernel='rbf', gamma='auto')
-      support_vector_machine.fit(train_data, train_labels)
-      pc += [percent_correct(support_vector_machine, 'cv')]
-      pc_to_c[pc[-1]] = Cs[-1]
-    plt.plot(np.log(Cs), pc)
-    plt.show()
+  def run_test(self, symbol, N, split, path, c_test_range=[1, 65000], num_iterations=20):
+    '''
+    :param symbol: stock tickername
+    :param N: parameter for exponential moving average
+    :param split: this is a tuple that should sum to 1, denoting the proportion of train, cv, and test data to use.
+      for example, split=(.6, .2, .2) would use 60% of the data to train, 20% to do cross validation, and 20% to test.
+    :param path: a string that gives the path to the .csv file with price data
+    :param c_test_range: the range of values used for the C parameter to the SVM
+    :param num_iterations: how many times to check different C values
+    :return: no return, but prints out performance to log
+    '''
 
+    self.make_svm(symbol, N, path, split, c_test_range, num_iterations)
     with open('SVM_performance.csv', 'a') as csvfile:
       writer = csv.writer(csvfile)
-      best_c = pc_to_c[np.max(pc)]
-      best_svm = svm.SVC(C=best_c, kernel='rbf', gamma='auto')
-      best_svm.fit(train_data, train_labels)
-      guess_buy_performance = 100*(np.sum(y)/np.size(y))
-      my_performance = 100*percent_correct(best_svm, 'test')
+      guess_buy_performance = 100*(np.sum(self.test_labels[symbol])/np.size(self.test_labels[symbol]))
+      my_performance = 100*self.percent_correct(self.best_svm[symbol], 'test', symbol=symbol)
       my_adjusted_performance = my_performance-guess_buy_performance
-      writer.writerow([symbol, N, best_c, num_years,
+      writer.writerow([symbol, N, -1, -1,
                       my_performance,
                       guess_buy_performance,
                       my_adjusted_performance])
     csvfile.close()
-    print('My strategy: {}%'.format(my_performance))
-    print('Always buy strategy: {}%'.format(guess_buy_performance))
-    print('Advantage: {}%'.format(my_adjusted_performance))
-    simulate_amount_gained(best_svm, opens[1:], 2000, can_short=False)
+    print('My strategy percent correct: {}%'.format(my_performance))
+    print('Always buy strategy percent correct: {}%'.format(guess_buy_performance))
+    print('Advantage percent correct: {}%'.format(my_adjusted_performance))
+    amount_gained = self.simulate_amount_gained(symbol=symbol,
+                                svm=self.best_svm[symbol],
+                                type='test', show_output=True)
+    buy_always_amount_gained = self.simulate_amount_gained_buy_always(symbol, type='test', show_output=True)
+    print('Buy always amount: ${}'.format(buy_always_amount_gained))
+    print('Advantage: ${}'.format(amount_gained-buy_always_amount_gained))
 
 if __name__ == '__main__':
-
-  start_train = pd.Timestamp(2012, 2, 1)
-  end_train = pd.Timestamp(2015, 2, 10)
-  start_cv = pd.Timestamp(2016, 2, 10)
-  end_cv = pd.Timestamp(2017, 2, 20)
-  start_test = pd.Timestamp(2018, 2, 20)
-  end_test = pd.Timestamp(2019, 2, 24)
-  s = SVM_trader()
-  s.run_test(symbol='GOOG', N=2, train_barriers=[start_train, end_train], test_barriers=[start_test, end_test], c_test_range=[1, 600000], num_iterations=10, cv_barriers=[start_cv, end_cv])
+  s = SVM_trader(2000, False)
+  stock_symbols = ['SPY', 'AAPL', 'ZNGA', 'IBM']
+  for stock_symbol in stock_symbols:
+    s.run_test(symbol=stock_symbol, N=10, split=(.4, .2, .4), path=stock_symbol+'.csv',
+               c_test_range=[1, 6000000], num_iterations=10)
 
