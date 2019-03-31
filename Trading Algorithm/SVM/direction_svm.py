@@ -37,27 +37,20 @@ class SVM_trader:
       "datatype": "json",
       "apikey": "A1A3K3EDC9CG3LVW",
     }
-    # response = requests.get(API_URL, params=data)
-    #
-    # data = response.json()['Time Series (Daily)']
-    # df = pd.DataFrame(data).transpose()
-    #
-    # df = df[::-1]  # goes from earliest to newest
-    #
-    # df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-    # df.to_csv(symbol + '.csv', encoding='utf-8')
-    # nan = float('NaN')
-    #
-    # df = pd.read_csv(symbol + '.csv', infer_datetime_format=True)
-    # df = df.rename(columns={'Unnamed: 0': 'Date'})
-    #
-    # df.at[df.shape[0] - 1, 'High'] = nan
-    # df.at[df.shape[0] - 1, 'Low'] = nan
-    # df.at[df.shape[0] - 1, 'Close'] = nan
-    # df['Volume'] = np.asarray(np.array(df['Volume']), 'float')
-    # df.at[df.shape[0] - 1, 'Volume'] = nan
-    #
-    # df.to_csv(symbol + '.csv', encoding='utf-8')
+    response = requests.get(API_URL, params=data)
+
+    data = response.json()['Time Series (Daily)']
+    df = pd.DataFrame(data).transpose()
+
+    df = df[::-1]  # goes from earliest to newest
+
+    df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+    df.to_csv(symbol + '.csv', encoding='utf-8')
+
+    df = pd.read_csv(symbol + '.csv', infer_datetime_format=True)
+    df = df.rename(columns={'Unnamed: 0': 'Date'})
+
+    df.to_csv(symbol + '.csv', encoding='utf-8')
 
     self.data[symbol] = pd.read_csv(csv_path, infer_datetime_format=True)
 
@@ -67,31 +60,36 @@ class SVM_trader:
     this_data = self.data[symbol].drop(['Date', 'Unnamed: 0'], axis=1) # get rid of date column for the data to be trained
 
     this_data = this_data.dropna() # gets rid of last row with only open data
+    # X = np.array(this_data)
     X = np.array(this_data.ewm(span=N, adjust=False).mean())  # all of the exponential moving averages
     startrow = np.zeros((1, X[0].size)) # make the first row unknown
     X = np.append(startrow, X, axis=0)
-    mornings = np.array(self.data[symbol]['Open']) # gets all opens
-    mornings = mornings.reshape(-1, 1)
-    X = np.column_stack((mornings, X))
 
     # Scaling data
     scaler = MinMaxScaler(copy=False)
     scaler.fit(X)
     scaler.transform(X)
 
-    opens, closes = np.array(this_data['Open']), np.array(this_data['Close'])
-    assert opens.size == closes.size
-    y = np.array([1 if (opens[i] < closes[i]) else 0 for i in range(opens.size)])
+    opens = np.array(this_data['Open'])
+    y = np.array([1 if (opens[i] < opens[i+1]) else 0 for i in range(opens.size-1)])
+    y = np.append(y, 0)
 
     train = int(self.data[symbol]['Open'].size * split[0])  # gives number of training days
     cv = int(self.data[symbol]['Open'].size * split[1])  # number of cross validation days
+    test = int(self.data[symbol]['Open'].size * split[2]) -1  # gives number of testing days (doesn't include last point)
+
+    for i in range(len(X)-1):
+      X[i][0] = X[i+1][0] # using current opening data
+    X[-1][0] = 0
 
     # Makes train, cv, and test data for the symbol. Also does not include
     # the last day of data in test_data, because there is not a label for it.
     self.train_data[symbol], self.train_labels[symbol] = X[:train], y[:train]
     self.cv_data[symbol], self.cv_labels[symbol] = X[train:train + cv], y[train:train + cv]
-    self.test_data[symbol], self.test_labels[symbol] = X[train + cv:-1], y[train + cv:]
-
+    self.test_data[symbol], self.test_labels[symbol] = X[train + cv: train + cv + test], y[train + cv:train + cv + test]
+    print(self.train_data[symbol][:10])
+    print(self.train_labels[symbol][:10])
+    mornings = np.array(self.data[symbol]['Open']) # gets all opens
     self.train_prices[symbol], self.cv_prices[symbol], self.test_prices[symbol] = \
       mornings[:train], mornings[train:train+cv], mornings[train+cv:-1]
 
@@ -147,11 +145,12 @@ class SVM_trader:
     self.cv_performance.add((symbol, most_made_poly))
     self.best_svm_poly[symbol] = amount_to_svm_poly[most_made_poly]
 
-    plt.plot(np.log(Cs), amounts_rbf)
-    plt.plot(np.log(Cs), amounts_poly)
+    plt.plot(np.log(Cs), amounts_rbf, label='RBF')
+    plt.plot(np.log(Cs), amounts_poly, label='polynomial')
     plt.title(symbol)
     plt.xlabel('C values')
     plt.ylabel('Amount made with this C value')
+    plt.legend()
     plt.show()
 
 
@@ -249,17 +248,17 @@ class SVM_trader:
     print('Advantage percent correct: {}%'.format(my_adjusted_performance))
     amount_gained = self.simulate_amount_gained(symbol=symbol,
                                 svm1=self.best_svm_rbf[symbol],
-                                svm2 = self.best_svm_poly[symbol],
                                 type='test', show_output=True)
     buy_always_amount_gained = self.simulate_amount_gained_buy_always(symbol, type='test', show_output=True)
     print('Buy always amount: ${}'.format(buy_always_amount_gained))
     print('Advantage: ${}'.format(amount_gained-buy_always_amount_gained))
 
 if __name__ == '__main__':
-  s = SVM_trader(2000, False)
-  stock_symbols = ['ZNGA', 'SPY', 'AAPL', 'IBM']
+  s = SVM_trader(2000, True)
+  # stock_symbols = ['ZNGA', 'SPY', 'AAPL', 'IBM']
+  stock_symbols = ['SPY']
   for stock_symbol in stock_symbols:
     print('\n\n' + stock_symbol)
-    s.run_test(symbol=stock_symbol, N=10, split=(.6, .05, .35), path=stock_symbol+'.csv',
+    s.run_test(symbol=stock_symbol, N=20, split=(.4, .1, .4), path=stock_symbol+'.csv',
                c_test_range=[1, 6000000], num_iterations=10)
 
