@@ -181,7 +181,7 @@ class RNN:
         self.regressor.load_weights("model.h5") # load weights into new model
 
     def buy(self):
-        # Submit a market order to buy 1 share of Apple at market price
+        # Submit a market order to buy 1 share of stock at market price
         self.api.submit_order(
             symbol=self.stock,
             qty=1,
@@ -190,3 +190,12 @@ class RNN:
             time_in_force='gtc'
         )
     
+    def sell(self):
+        # Submit a market order to sell 1 share of stock at market price
+        self.api.submit_order(
+            symbol=self.stock,
+            qty=1,
+            side='sell',
+            type='market',
+            time_in_force='gtc'
+        )
