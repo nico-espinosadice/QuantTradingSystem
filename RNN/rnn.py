@@ -23,7 +23,8 @@ class RNN:
         self.date = "2017-00-00T00:00:00.000Z" # date specified here only for testing purposes
 
         self.sc = MinMaxScaler(feature_range=(0, 1))
-        self.api = tradeapi.REST(key_id="PKJ9405JV9440XDSQIS3", secret_key="DeH3vuKx1DoC/QyxygHQlp0c5vto7NXnBrOQQ7Oa")
+        self.api = tradeapi.REST(key_id="PKXVRTVRHQWTL50AYFKA",
+                                 secret_key="")
 
         self.dataset, self.training_set, self.X_train, self.y_train, \
             self.regressor, self.dataset_test, self.test_set, self.real_stock_price, \
