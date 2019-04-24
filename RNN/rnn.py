@@ -179,3 +179,14 @@ class RNN:
         self.json_file.close()
         self.regressor = model_from_json(self.loaded_model_json)
         self.regressor.load_weights("model.h5") # load weights into new model
+
+    def buy(self):
+        # Submit a market order to buy 1 share of Apple at market price
+        self.api.submit_order(
+            symbol=self.stock,
+            qty=1,
+            side='buy',
+            type='market',
+            time_in_force='gtc'
+        )
+    
