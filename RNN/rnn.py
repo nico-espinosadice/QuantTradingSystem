@@ -23,21 +23,22 @@ class RNN:
         self.date = "2017-00-00T00:00:00.000Z" # date specified here only for testing purposes
 
         self.sc = MinMaxScaler(feature_range=(0, 1))
-        self.api = tradeapi.REST(key_id="PKXVRTVRHQWTL50AYFKA",
-                                 secret_key="SUXQAbLyKCZdJMQnvCcwnpi7aEKXq0ILydB6iYpB")
+        self.api = tradeapi.REST(key_id='PKXVRTVRHQWTL50AYFKA',
+                                 secret_key='SUXQAbLyKCZdJMQnvCcwnpi7aEKXq0ILydB6iYpB',
+                                 base_url='https://paper-api.alpaca.markets')
 
         self.dataset, self.training_set, self.X_train, self.y_train, \
             self.regressor, self.dataset_test, self.test_set, self.real_stock_price, \
             self.inputs, self.dataset_total, self.X_test, self.predicted_stock_price, \
             self.data = [], [], [], [], [], [], [], [], [], [], [], [], []
-        
+
     def loadTrainData(self):
         """ Loads data for training. """
         self.dataset = pd.read_csv(self.csv_train, index_col="Date", parse_dates=True)
 
         training_set = self.dataset["Open"]
         self.training_set = pd.DataFrame(training_set)
-        
+
     def loadTestData(self):
         """ Loads the data for testing. """
         self.dataset_test = pd.read_csv(self.csv_test, index_col="Date", parse_dates=True)
@@ -61,14 +62,14 @@ class RNN:
             df_row = df_row.set_index('Date')
 
             self.dataset = self.dataset.append(df_row)
-    
+
     def scaleTrainData(self):
         """ Scales the training data using sklearn MinMaxScaler. """
         self.loadTrainData()
 
         # Feature Scaling
         self.training_set_scaled = self.sc.fit_transform(self.training_set)
-        
+
         # Creating a data structure with 60 timesteps and 1 output
         self.X_train = []
         self.y_train = []
@@ -108,7 +109,7 @@ class RNN:
         self.regressor.add(Dense(units=1))
 
     def fitRNN(self):
-        """ Fits the RNN to the data. """ 
+        """ Fits the RNN to the data. """
         self.buildRNN()
 
         # Compiling the RNN
@@ -150,7 +151,7 @@ class RNN:
         plt.xlim(0, 30)
         plt.ylim(750, 875)
         plt.show()
-    
+
     def predictTomorrow(self):
         """ Predicts the stock price for tomorrow. """
         self.loadTrainData()
@@ -173,7 +174,7 @@ class RNN:
         with open("model.json", "w") as json_file:
             json_file.write(self.model_json)
         self.regressor.save_weights("model.h5")  # serialize weights to HDF5
-        
+
     def loadModel(self):
         self.json_file = open('model.json', 'r') # load json and create model
         self.loaded_model_json = self.json_file.read()
@@ -188,9 +189,9 @@ class RNN:
             qty=1,
             side='buy',
             type='market',
-            time_in_force='gtc'
+            time_in_force='gtc',
         )
-    
+
     def sell(self):
         # Submit a market order to sell 1 share of stock at market price
         self.api.submit_order(
