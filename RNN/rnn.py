@@ -24,7 +24,7 @@ class RNN:
 
         self.sc = MinMaxScaler(feature_range=(0, 1))
         self.api = tradeapi.REST(key_id="PKXVRTVRHQWTL50AYFKA",
-                                 secret_key="")
+                                 secret_key="SUXQAbLyKCZdJMQnvCcwnpi7aEKXq0ILydB6iYpB")
 
         self.dataset, self.training_set, self.X_train, self.y_train, \
             self.regressor, self.dataset_test, self.test_set, self.real_stock_price, \
