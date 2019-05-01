@@ -24,7 +24,7 @@ class RNN:
 
         self.sc = MinMaxScaler(feature_range=(0, 1))
         self.api = tradeapi.REST(key_id='PKXVRTVRHQWTL50AYFKA',
-                                 secret_key='',
+                                 secret_key='SUXQAbLyKCZdJMQnvCcwnpi7aEKXq0ILydB6iYpB',
                                  base_url='https://paper-api.alpaca.markets')
 
         self.dataset, self.training_set, self.X_train, self.y_train, \
@@ -167,6 +167,8 @@ class RNN:
 
         self.predicted_stock_price = self.regressor.predict(self.inputs)
         self.predicted_stock_price = self.sc.inverse_transform(self.predicted_stock_price)
+        print("previous 2 days", self.api.get_barset(self.stock, 'day', limit=2))
+        print("prediction for tomorrow:", self.predicted_stock_price)
 
     def saveModel(self):
         """ Saves RNN to JSON file """
@@ -201,3 +203,4 @@ class RNN:
             type='market',
             time_in_force='gtc'
         )
+
