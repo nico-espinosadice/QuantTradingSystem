@@ -136,8 +136,8 @@ class RNN:
         self.X_test = np.array(self.X_test)
         self.X_test = np.reshape(self.X_test, (self.X_test.shape[0], self.X_test.shape[1], 1))
 
-        #self.predicted_stock_price = self.regressor.predict(self.X_test)
-        #self.predicted_stock_price = self.sc.inverse_transform(self.predicted_stock_price)
+        self.predicted_stock_price = self.regressor.predict(self.X_test)
+        self.predicted_stock_price = self.sc.inverse_transform(self.predicted_stock_price)
 
     def visualize(self):
         """ Visualize the results of the real stock price versus the predicted stock price. """
@@ -148,7 +148,7 @@ class RNN:
         plt.xlabel('Time')
         plt.ylabel('Google Stock Price')
         plt.legend()
-        plt.xlim(0, 30)
+        plt.xlim(0, 360)
         plt.ylim(750, 875)
         plt.show()
 
