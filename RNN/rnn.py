@@ -24,7 +24,7 @@ class RNN:
 
         self.sc = MinMaxScaler(feature_range=(0, 1))
         self.api = tradeapi.REST(key_id='PKXVRTVRHQWTL50AYFKA',
-                                 secret_key='SUXQAbLyKCZdJMQnvCcwnpi7aEKXq0ILydB6iYpB',
+                                 secret_key='',
                                  base_url='https://paper-api.alpaca.markets')
 
         self.dataset, self.training_set, self.X_train, self.y_train, \

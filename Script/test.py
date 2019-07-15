@@ -1,7 +1,7 @@
 import alpaca_trade_api as tradeapi
 
 api = tradeapi.REST(key_id='PKXVRTVRHQWTL50AYFKA',
-                                 secret_key='SUXQAbLyKCZdJMQnvCcwnpi7aEKXq0ILydB6iYpB',
+                                 secret_key='',
                                  base_url='https://paper-api.alpaca.markets')
 api.submit_order(
     symbol = "AAPL",
